@@ -15,6 +15,33 @@ from rastertodataframe import raster_to_dataframe
 from math import sin, cos, sqrt, atan2, radians
 from multiprocessing import Pool
 
+#utility functions
+def getPercent(num, status):
+    if ((num >= len(precDF)/5) and status == 0):
+        status = 1
+        print("20% complete")
+    elif ((num >= len(precDF)/4) and status == 1):
+        status = 2
+        print("25% complete")
+    elif ((num >= (len(precDF)/5) * 2) and status == 2):
+        status = 3
+        print("40% complete")
+    elif ((num >= len(precDF)/2) and status == 3):
+        status = 4
+        print("50% complete")
+    elif ((num >= (len(precDF)/5) * 3) and status == 4):
+        status = 5
+        print("60% complete")
+    elif ((num >= (len(precDF)/4) * 3) and status == 5):
+        status = 6
+        print("75% complete")
+    elif ((num >= (len(precDF)/5) * 4) and status == 6):
+        status = 7
+        print("80% complete")
+    return status
+
+
+
 # Data import =================================================================
 
 # https://www1.ncdc.noaa.gov/pub/data/cdo/documentation/PRECIP_HLY_documentation.pdf
@@ -50,7 +77,6 @@ df2 = pd.read_csv("D:\\Documents\\College\\Spring2020\\Projects\\COMP542\\data_W
 biomeDS = xr.open_rasterio("D:\\Documents\\College\\Spring2020\\Projects\\COMP542\\data_WPF\\biomes\\anthromes_v2_2000\\a2000_na.tif")
 
 
-# ds.sel(band=2, lat=19.9, lon=39.5, method='nearest').values
 # driver = gdal.GetDriverByName('GTiff')
 # filename = "D:\\Documents\\College\\Spring2020\\Projects\\COMP542\\data_WPF\\biomes\\anthromes_v2_2000\\a2000_no.tif" #path to raster
 # dataset = gdal.Open(filename)
@@ -82,9 +108,15 @@ biomeDS = xr.open_rasterio("D:\\Documents\\College\\Spring2020\\Projects\\COMP54
 print(df1)
 print(df2)
 print(biomeDS)
+
+
+
+
+
 print('========== data preprocessing... =======')
 # print(biomeDS.head(1))
 # print(biomeDS.tail(1))
+
 #======================================================
 #=============Filtering CSVs to LLAs===================
 #=============and required data========================
@@ -93,17 +125,61 @@ print('========== data preprocessing... =======')
 
 # HPCP is rain in inches
 print('filtering precipitation data...')
-df1 = df1[['STATION','LATITUDE', 'LONGITUDE', 'HPCP', 'DATE']]
-df2 = df2[['STATION','LATITUDE', 'LONGITUDE', 'HPCP', 'DATE']]
+df1 = df1[['STATION', 'STATION_NAME', 'LATITUDE', 'LONGITUDE', 'HPCP', 'DATE']]
+df2 = df2[['STATION', 'STATION_NAME','LATITUDE', 'LONGITUDE', 'HPCP', 'DATE']]
 
 # print(df1)
 # print(df2)
 
 #combine rain data
-precDF = pd.concat([df1,df2])
+precDF = df1.append(df2, ignore_index = True)
+precDF.reset_index()
 
 #remove rows with 999 HPCP
 precDF = precDF[precDF['HPCP'] < 900]
+
+pS = 0
+
+print("selecting only fireseason data")
+#remove percipitaton during the fire season
+fireOffSeaStart = 501
+fireOffSeaEnd = 1131
+#create a new data set of precipitation in average HPCP during California fire off season (based on last year's season: May - November)
+precDF['DATE'] = precDF['DATE'].str[:8]
+precDF['YEAR'] = precDF['DATE'].str[:4]
+precDF = precDF[((precDF['DATE'].astype(int) - precDF['DATE'].str[:4].astype(int) * 10000) > fireOffSeaStart) & ((precDF['DATE'].astype(int) - precDF['DATE'].str[:4].astype(int) * 10000) < fireOffSeaEnd)]
+
+
+
+print("averaging rain per day...")
+precDF['HPCP'] = precDF.groupby('DATE')['HPCP'].transform('mean')
+# print(precDF.head(20))
+
+
+#set average HPCP for each station
+# precDF = precDF.drop_duplicates(subset='DATE', keep = "last").reset_index()
+print("averaging rain per station per fireseason")
+precDF['HPCP'] = precDF.groupby(['STATION' ,'YEAR'])['HPCP'].transform('mean')
+precDF = precDF.reset_index(drop = True)
+print(precDF.head(20))
+
+precDF = precDF.drop_duplicates(subset=['STATION', 'YEAR'], keep = "last").reset_index(drop = True)
+
+del precDF['DATE']
+precDF['STATION'] = precDF['STATION'].str[6:].astype(int)
+precDF = precDF.sort_values(['STATION','YEAR'])
+
+# for i, l in precDF.iterrows():
+#     if i > 1000:
+#         break
+#     # elif i < 900:
+#     #     continue
+#     print(i)
+#     print(precDF.at[i, 'STATION_NAME'])
+#     print(precDF.at[i, 'YEAR'])
+#     print(precDF.at[i, 'HPCP'])
+# precDF = precDF[precDF['Date']]
+
 
 #for each station a specific Lat,Lon
 # for index, row in precDF.head(n = 2).iterrows():
@@ -113,6 +189,10 @@ precDF = precDF[precDF['HPCP'] < 900]
 #         precDF.replace(to_replace = )
 
 print(precDF)
+
+#Sqeeze data to one row per station, with the HPCP data of the fire year
+
+
 
 print('========== Wildfire data cleansing... =========')
 #Wildfire causation counting
@@ -132,6 +212,7 @@ countListVals = dict(df['STAT_CAUSE_DESCR'].value_counts()).values()
 countListNames = dict(df['STAT_CAUSE_DESCR'].value_counts()).keys()
 
 df = df[['LATITUDE', 'LONGITUDE', 'STAT_CAUSE_DESCR','FIRE_YEAR']]
+df.reset_index()
 print(df)
 
 
@@ -165,25 +246,37 @@ print('========== Biome data preprocessing... =========')
 #     return switch.get(argument, "NoData")
 biomeList = []
 
+
+
 pS = 0
 #debug purpose try
 # try:
-for i, c in precDF['LATITUDE'].iteritems():
-    if ((i >= len(precDF)/4) and pS == 0):
-        pS = 1
-        print("25% complete")
-    elif ((i >= len(precDF)/2) and pS == 1):
-        pS = 2
-        print("50% complete")
-    elif ((i >= (len(precDF)/4) * 3) and pS == 2):
-        pS = 3
-        print("75% complete")
+for i, c in precDF.iterrows():
+    if i > 1000:
+        break
+    elif i < 900:
+        continue
+    # print(i, c)
+    pS = getPercent(i, pS)
     try:
         pixVal = biomeDS.sel(band=0, y=precDF.loc[i, 'LATITUDE'], x=precDF.loc[i, 'LONGITUDE'], method='nearest').values
+        if (type(pixVal) is not np.ndarray):
+            print("=============")
+            print(precDF.at[i, 'STATION_NAME'])
+            print(precDF.at[i, 'LATITUDE'])
+            print("...")
+            print(precDF.at[i, 'LONGITUDE'])
+            print("-----")
+            print(i)
+            print("&&&&&&")
+            print(pixVal)
+            print("=============")
+        # else:
+            # print("nonononosnaofdscnbosahvbocywneag oiu2ewvgFOCIAUEW")
         biomeList.append(pixVal)
     except:
-        print("rip")
-        biomeList.append(9999)
+        print("Biome Unknown")
+        biomeList.append(999)
 
 # except:
     # print("Error. Old pixVal at {}, i at {}".format(pixVal,i))
@@ -209,19 +302,28 @@ for i, c in precDF['LATITUDE'].iteritems():
     # print("For Station {}, biome is: {}".format(precDF.loc[i, 'STATION'],pixVal))
 precDF['STAT_BIOME'] = biomeList
 
+# def ifBiome(x):
+#     if (isinstance(x, list)):
+#         print("biome edge")
+#         if (max(list) > 999):
+#             return true
+
+
 #drop unknown biomes
-precDF = precDF[precDF.STAT_BIOME > 900]
+precDF = precDF[precDF.STAT_BIOME != 999]
 print(precDF.head(5))
+
+
 
 #======================================================
 #============= Fire Checker Data ======================
 #======================================================
 # FireBinary = []
-#
+# #
 # #station perimeter in km
 # stat_perim = 100
-#
-#
+# #
+# #
 # # approximate radius of earth in km
 # R = 6373.0
 # def get_fire_distance(stat_la, stat_lo, fire_la, fire_lo):
@@ -234,7 +336,7 @@ print(precDF.head(5))
 #
 #     distance = R * c
 #     return distance
-#
+# #
 # pS = 0
 #
 # for i, c in precDF['LATITUDE'].iteritems():
